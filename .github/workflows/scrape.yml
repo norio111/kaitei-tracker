@@ -3,7 +3,7 @@ name: 診療報酬改定チェック
 on:
   schedule:
     - cron: '0 0 * * *'   # 毎日 UTC 0:00 = JST 9:00
-  workflow_dispatch:        # 手動実行ボタンも使えるように
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: リポジトリをチェックアウト
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Python セットアップ
         uses: actions/setup-python@v5
@@ -21,10 +21,13 @@ jobs:
           python-version: '3.12'
 
       - name: 依存関係インストール
-        run: pip install requests beautifulsoup4
+        run: pip install -r requirements.txt
 
-      - name: スクレイピング実行
-        run: python scraper.py
+      - name: 説明資料チェック
+        run: python scraper/scrape_summary.py
+
+      - name: 疑義解釈チェック
+        run: python scraper/scrape_gigi.py
 
       - name: 変化があればコミット&プッシュ
         run: |
@@ -32,7 +35,7 @@ jobs:
           git config user.email "kaitei-bot@users.noreply.github.com"
           git add db/
           if ! git diff --staged --quiet; then
-            git commit -m "update: $(date +'%Y-%m-%d %H:%M') 診療報酬改定資料チェック"
+            git commit -m "update: $(date +'%Y-%m-%d %H:%M') 診療報酬改定チェック"
             git push
           else
             echo "変化なし"

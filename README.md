@@ -1,73 +1,100 @@
 # kaitei-tracker
 
-令和８年度診療報酬改定説明資料ページ（厚労省）を毎日自動チェックし、
-新規・差し替え資料をSQLiteに記録するツール。
+令和８年度診療報酬改定に関する各種資料（説明資料・疑義解釈・今後は通知等も）を
+自動収集し、`revision_document` という単一のFactテーブルに蓄積するツール。
 
-## 設計方針
+## アーキテクチャ
 
-- **Fact層のみを永続化**：資料の出現日時・URL・サイズを記録。中身の解釈（訪問看護への影響など）はここでは行わない
-- **差し替え検知**：厚労省がPDFを差し替えるとURLが変わるため、旧URLは`is_active=0`にして残す（削除しない）
-- **優先タグ**：資料名に「訪問看護」「在宅医療」を含むものは `is_priority=1` を付与
+```
+kaitei-tracker/
+├── common/
+│   ├── db.py       ← revision_documentへの共通アクセス層（upsert・非アクティブ化）
+│   └── wareki.py   ← 令和→西暦の日付変換ユーティリティ
+├── scraper/
+│   ├── scrape_summary.py  ← 説明資料一覧ページ用
+│   └── scrape_gigi.py     ← 改定ハブページの疑義解釈セクション用
+├── db/
+│   └── kaitei.db   ← 統合SQLite（categoryで種別を分ける）
+├── tests/
+│   ├── fixture_summary.html
+│   └── fixture_hub.html
+└── .github/workflows/scrape.yml
+```
 
-## セットアップ手順
+**設計方針**：スクレイパ対象を増やす時は `scraper/` にファイルを追加するだけ。
+DBスキーマは触らない。`category`列で種別（'summary' / 'gigi' / 将来の 'notification' 等）を分ける。
 
-1. このディレクトリの中身をGitHubリポジトリにpush
-   ```bash
-   git init
-   git add .
-   git commit -m "init"
-   git remote add origin <あなたのリポジトリURL>
-   git branch -M main
-   git push -u origin main
-   ```
+## revision_document テーブル
 
-2. リポジトリの Settings → Actions → General →
-   "Workflow permissions" を **Read and write permissions** に変更
-   （scraper.pyがdb/を自動コミットするため）
+| カラム | 内容 |
+|---|---|
+| category | 'summary'（説明資料）/ 'gigi'（疑義解釈）等 |
+| title | 資料タイトル |
+| published_at | 資料に記載の日付（ISO形式、分からない場合はNULL） |
+| url | PDF等へのリンク（UNIQUE） |
+| source_page | どのハブページから拾ったか |
+| size | ファイルサイズ表記 |
+| content_hash | 将来の差分検知用に予約 |
+| is_priority | 訪問看護・在宅医療関連なら1 |
+| fetched_at | このツールが検知した日時 |
+| is_active | 元ページから消えたら0（削除はしない＝Factは永続化） |
 
-3. 初回は手動実行して動作確認
-   - GitHubリポジトリの Actions タブ → 「診療報酬改定チェック」→ Run workflow
+ここに保存するのはFactのみ。「重要かどうか」「何が変わったか」といった
+Interpretationは今回のスコープ外（将来 `document_topic` 等を別テーブルで追加する想定）。
 
-4. 以降は毎日 JST 9:00 に自動実行される（cron: `0 0 * * *`）
-
-## ローカルでの動作確認
+## セットアップ
 
 ```bash
 pip install -r requirements.txt
 
-# 本番URLに接続してテスト
-python scraper.py
+# ローカルテスト（ネットワーク不要）
+python scraper/scrape_summary.py --test-file tests/fixture_summary.html
+python scraper/scrape_gigi.py --test-file tests/fixture_hub.html
 
-# ローカルのテストHTMLで動作確認（ネットワーク不要）
-python scraper.py --test-file tests/fixture_page.html
+# 本番実行
+python scraper/scrape_summary.py
+python scraper/scrape_gigi.py
 ```
 
-## DBの中身を見る
+## 既存リポジトリ（v1）からの移行手順
+
+旧構成（`scraper.py`が直下、`db/kaitei_fact.db`）から今回の構成に切り替える場合：
 
 ```bash
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('db/kaitei_fact.db')
-for row in conn.execute('SELECT * FROM kaitei_fact WHERE is_active=1'):
-    print(row)
-"
+# 1. 旧ファイルを削除
+git rm scraper.py
+git rm -r db/kaitei_fact.db   # 旧DBは役目を終えたので削除してOK
+                                 # （Factは新しいDBに載せ替えることになるが、
+                                 #   ページ自体は毎回全件取得し直すので実害なし）
+
+# 2. 新しいファイル一式をコピー
+#    (common/, scraper/, tests/, requirements.txt, .github/workflows/scrape.yml, README.md)
+
+# 3. コミット
+git add .
+git commit -m "refactor: revision_document テーブルに統合、疑義解釈スクレイパを追加"
+git push
 ```
 
-## 次のステップ（Interpretation層）
+Actionsの手動実行（Run workflow）で、`db/kaitei.db` が新規作成され、
+説明資料24件・疑義解釈13件（本記事執筆時点）が入るはず。
 
-このスクリプトはFactの検知のみ。中身の解釈（訪問看護療養費への影響評価など）は
-別スクリプトで `kaitei_interpretation` テーブルに書き込む想定：
+## クエリ例
 
 ```sql
-CREATE TABLE kaitei_interpretation (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    fact_id INTEGER REFERENCES kaitei_fact(id),
-    summary TEXT,
-    impact_on_houmon_kango TEXT,  -- 訪問看護への影響
-    generated_at TEXT,
-    model_used TEXT
-);
+-- 疑義解釈だけを新しい順に
+SELECT published_at, title, url FROM revision_document
+WHERE category = 'gigi' AND is_active = 1
+ORDER BY published_at DESC;
+
+-- 訪問看護・在宅医療関連のみ（カテゴリ横断）
+SELECT category, title, url FROM revision_document
+WHERE is_priority = 1 AND is_active = 1;
 ```
 
-PDFの中身をClaude APIに読ませて自動要約する処理は、このFact検知の後段に
-別ジョブとして追加できる。
+## 今後の拡張候補
+
+- `scraper/scrape_notification.py`：告示・通知（第３〜５章）
+- `scraper/scrape_yakka.py`：薬価改定関連
+- `document_topic` テーブル：LLMによる内容要約・影響評価（Interpretation層）
+- 差分検知時のGitHub Issue自動発行
