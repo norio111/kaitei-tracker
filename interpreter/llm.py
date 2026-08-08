@@ -22,28 +22,96 @@ PROMPT_VERSION = "interpret-v0.1"
 
 VALID_TYPES = {"新設", "要件変更", "明確化", "経過措置", "廃止", "その他"}
 
+TOOL_NAME = "record_interpretation"
+
+TOOL_SCHEMA = {
+    "name": TOOL_NAME,
+    "description": "診療報酬改定資料の本文から、変更点と訪問看護への言及を構造化して記録する。",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "change_points": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": sorted(VALID_TYPES),
+                            "description": "分類。迷ったら『その他』を使うこと。無理に分類しない。",
+                        },
+                        "point": {
+                            "type": "string",
+                            "description": "何がどう変わった/明記されているかを本文の記述に基づき1文で",
+                        },
+                        "quote": {
+                            "type": "string",
+                            "description": (
+                                "根拠となる本文中の該当箇所。本文の文字列をそのまま抜粋すること。"
+                                "要約・言い換え・改変は禁止。必ず本文中の1箇所の連続した文章のみを抜粋し、"
+                                "離れた場所にある複数の文をつなぎ合わせて1つの抜粋のように示すことは禁止。"
+                            ),
+                        },
+                        "page": {"type": "integer", "description": "抜粋元のページ番号"},
+                    },
+                    "required": ["type", "point", "quote", "page"],
+                },
+            },
+            "houmon_kango_related": {
+                "type": "boolean",
+                "description": (
+                    "本文中に訪問看護・訪問看護ステーションに関する記述が存在するかどうかの機械的判定。"
+                    "関係しそうだと『思う』かではなく、実際にその語句・話題への言及が本文にあるかどうかで判定する。"
+                ),
+            },
+            "houmon_kango_mentions": {
+                "type": "array",
+                "description": "houmon_kango_relatedがfalseの場合は空配列",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "excerpt": {
+                            "type": "string",
+                            "description": (
+                                "訪問看護に関する記述の該当箇所を本文からそのまま抜粋。要約禁止。"
+                                "必ず1箇所の連続した文章のみとし、複数の離れた箇所をつなぎ合わせないこと。"
+                                "訪問看護への言及が複数箇所にある場合は、この配列に複数要素として分けて入れること。"
+                            ),
+                        },
+                        "page": {"type": "integer"},
+                    },
+                    "required": ["excerpt", "page"],
+                },
+            },
+        },
+        "required": ["change_points", "houmon_kango_related", "houmon_kango_mentions"],
+    },
+}
+
 SYSTEM_PROMPT = """あなたは診療報酬改定資料から、記載されている事実を構造化して抽出するアシスタントです。
 資料に書かれていない推測・一般的な医学知識・制度への評価は一切加えないでください。
 本文に明記されていることだけを抽出対象とします。
+quoteやexcerptは本文からの逐語抜粋のみとし、要約・言い換え・複数箇所の結合は禁止です。
+"""
 
+# Ollama等、tool useに対応していないバックエンド向けの自由記述JSON形式プロンプト。
+# Claudeバックエンドはtool use（TOOL_SCHEMA）を使うため、こちらのJSON整形指示は使わない。
+FREEFORM_JSON_INSTRUCTIONS = """
 以下のJSON形式のみで出力してください。前置き・Markdown記法・説明文は一切不要です。
 
 {
   "change_points": [
     {
-      "type": "新設 | 要件変更 | 明確化 | 経過措置 | 廃止 | その他 のいずれか（迷ったら『その他』を使うこと。無理に分類しない）",
+      "type": "新設 | 要件変更 | 明確化 | 経過措置 | 廃止 | その他 のいずれか",
       "point": "何がどう変わった/明記されているかを本文の記述に基づき1文で",
-      "quote": "根拠となる本文中の該当箇所。本文の文字列をそのまま抜粋すること。要約・言い換え・改変は禁止。必ず本文中の1箇所の連続した文章のみを抜粋し、離れた場所にある複数の文をつなぎ合わせて1つの抜粋のように示すことは禁止。",
-      "page": 抜粋元のページ番号（整数、本文中の [page N] 表記を見て判断）
-    }
-  ],
-  "houmon_kango_related": true または false（本文中に訪問看護・訪問看護ステーションに関する記述が存在するかどうかの機械的判定。関係しそうだと"思う"かではなく、実際にその語句・話題への言及が本文にあるかどうかで判定する）,
-  "houmon_kango_mentions": [
-    {
-      "excerpt": "訪問看護に関する記述の該当箇所を本文からそのまま抜粋。要約禁止。必ず1箇所の連続した文章のみとし、複数の離れた箇所をつなぎ合わせないこと。訪問看護への言及が複数箇所にある場合は、この配列に複数要素として分けて入れること。",
+      "quote": "根拠となる本文中の該当箇所。本文の文字列をそのまま抜粋すること。",
       "page": 抜粋元のページ番号（整数）
     }
-  ]（houmon_kango_relatedがfalseの場合は空配列）
+  ],
+  "houmon_kango_related": true または false,
+  "houmon_kango_mentions": [
+    {"excerpt": "訪問看護に関する記述の該当箇所をそのまま抜粋", "page": 抜粋元のページ番号（整数）}
+  ]
 }
 """
 

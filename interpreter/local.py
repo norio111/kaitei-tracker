@@ -13,7 +13,7 @@ import json
 
 import requests
 
-from interpreter.llm import SYSTEM_PROMPT, build_user_message, parse_json_response
+from interpreter.llm import FREEFORM_JSON_INSTRUCTIONS, SYSTEM_PROMPT, build_user_message, parse_json_response
 
 DEFAULT_MODEL = "qwen2.5:14b-instruct"
 DEFAULT_HOST = "http://localhost:11434"
@@ -28,7 +28,7 @@ def interpret(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT + FREEFORM_JSON_INSTRUCTIONS},
             {"role": "user", "content": build_user_message(title, prompt_text)},
         ],
         "format": "json",  # Ollama側でJSON出力を強制（対応モデルのみ有効）
