@@ -9,6 +9,8 @@ Ollamaバックエンド。llm.get_backend('ollama') 経由で使う。
   - Ollamaを事前に起動しておくこと: `ollama serve`（デフォルトで localhost:11434）
 """
 
+import json
+
 import requests
 
 from interpreter.llm import SYSTEM_PROMPT, build_user_message, parse_json_response
@@ -31,10 +33,16 @@ def interpret(
         ],
         "format": "json",  # Ollama側でJSON出力を強制（対応モデルのみ有効）
         "stream": False,
+        "options": {"num_predict": 4096},  # 長い応答が途中で切れないよう余裕を持たせる
     }
     res = requests.post(f"{host}/api/chat", json=payload, timeout=300)
     res.raise_for_status()
     data = res.json()
     raw_text = data["message"]["content"]
-    result = parse_json_response(raw_text)
+
+    try:
+        result = parse_json_response(raw_text)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"JSON解析失敗: {e}\n--- 生レスポンス（先頭800字） ---\n{raw_text[:800]}") from e
+
     return result, model
