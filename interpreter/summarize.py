@@ -117,6 +117,14 @@ def print_verification_report(result: dict, pages: list[tuple[int, str]]) -> Non
     all_ok = True
 
     for i, cp in enumerate(change_points, start=1):
+        if not isinstance(cp, dict):
+            # 想定外の形式（例: 文字列が紛れ込んでいる）が来ても、
+            # ここで丸ごとクラッシュさせず、その要素だけ「要確認」として記録し処理を続ける。
+            # これにより、1件の異常データのせいで文書全体の解釈が失われる事態を防ぐ。
+            print(f"  [{i}] ⚠ 想定外の形式（dictでない）: {cp!r}")
+            all_ok = False
+            continue
+
         t = cp.get("type", "")
         type_ok = t in VALID_TYPES
         verified, detail = verify_quote(cp.get("quote", ""), pages, cp.get("page"))
@@ -132,6 +140,10 @@ def print_verification_report(result: dict, pages: list[tuple[int, str]]) -> Non
         if not mentions:
             print("  ⚠ houmon_kango_related=true なのに houmon_kango_mentions が空です")
         for i, m in enumerate(mentions, start=1):
+            if not isinstance(m, dict):
+                print(f"  houmon_kango[{i}] ⚠ 想定外の形式（dictでない）: {m!r}")
+                all_ok = False
+                continue
             excerpt = m.get("excerpt", "")
             verified, detail = verify_quote(excerpt, pages, m.get("page"))
             all_ok = all_ok and verified
@@ -147,8 +159,6 @@ def print_verification_report(result: dict, pages: list[tuple[int, str]]) -> Non
 
 
 def process_one(conn, doc: dict, interpret_fn, model: str | None, dry_run: bool) -> None:
-    print(f"  → {doc['title'][:60]}...")
-
     pdf_bytes = download_pdf_bytes(doc["url"])
     pages = extract_pages(pdf_bytes)
     if not any(t.strip() for _, t in pages):
@@ -229,10 +239,15 @@ def main():
     print(f"未解釈の資料: {len(pending)}件（category={args.category or '全て'}, limit={args.limit}, backend={args.backend}）")
 
     for doc in pending:
+        print(f"  → {doc['title'][:60]}...", flush=True)
         try:
             process_one(conn, doc, interpret_fn, args.model, args.dry_run)
         except Exception as e:  # noqa: BLE001
-            print(f"    ✗ 失敗: {e}", file=sys.stderr)
+            # 標準エラー出力ではなく標準出力に統一して出す。
+            # GitHub Actions等のログでは、stdout/stderrが別バッファのため
+            # 出力タイミングがずれて、実際とは異なる箇所にエラーが割り込んで
+            # 表示されることがある（原因調査時に紛らわしいので統一する）。
+            print(f"    ✗ 失敗（{doc['title'][:40]}...）: {e}", flush=True)
 
     after_snapshot = snapshot_revision_document(conn)
     if before_snapshot != after_snapshot:
