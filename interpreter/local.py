@@ -33,7 +33,7 @@ def interpret(
         ],
         "format": "json",  # Ollama側でJSON出力を強制（対応モデルのみ有効）
         "stream": False,
-        "options": {"num_predict": 4096},  # 長い応答が途中で切れないよう余裕を持たせる
+        "options": {"num_predict": 8192},  # 長い応答が途中で切れないよう余裕を持たせる
     }
     res = requests.post(f"{host}/api/chat", json=payload, timeout=300)
     res.raise_for_status()

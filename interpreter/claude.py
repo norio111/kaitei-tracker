@@ -18,7 +18,7 @@ def interpret(title: str, prompt_text: str, model: str = DEFAULT_MODEL, api_key:
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.create(
         model=model,
-        max_tokens=4096,  # change_pointsが多い資料でも途中で切れないよう余裕を持たせる
+        max_tokens=8192,  # change_pointsが多い資料でも途中で切れないよう余裕を持たせる
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": build_user_message(title, prompt_text)}],
     )
