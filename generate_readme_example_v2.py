@@ -64,7 +64,7 @@ def main():
     lines = []
     lines.append("## 実例：診療報酬改定資料からのFact/Interpretation抽出\n")
     lines.append(f"（`db/kaitei.db` の `document_topic` テーブルより実データを抜粋。"
-                 f"現在 {total} 件を処理済み）\n")
+                 f"データベース全体では現在 {total} 件のドキュメントを処理済み）\n")
 
     lines.append("### 入力（Fact層 / `revision_document`）\n")
     lines.append(f"- **タイトル**：{title}")
@@ -86,9 +86,9 @@ def main():
                 lines.append(f"- page: {cp['page']}")
             lines.append("")
         if len(change_points) > 2:
-            lines.append(f"（この資料からは全{len(change_points)}件の変更点を抽出。"
-                         f"全件は `db/kaitei.db` の `document_topic` テーブル、"
-                         f"またはレポート出力（`reports/`）を参照）\n")
+            lines.append(f"（**この1文書からは**全{len(change_points)}件の変更点を抽出——"
+                         f"上記の{total}件とは別軸の数字。全件は `db/kaitei.db` の `document_topic` "
+                         f"テーブル、またはレポート出力（`reports/`）を参照）\n")
 
     if houmon_related and houmon_excerpt:
         try:
@@ -120,8 +120,7 @@ def main():
     lines.append("quoteは元資料本文と自動照合済み（NFKC正規化・クロスページマッチング）。"
                   "元資料が改訂された場合はcontent_hashの差分で検知できる設計。\n")
 
-    lines.append(f"出典：厚生労働省ホームページ「{title}」（{url}）をもとに（作成者名）が構造化・加工")
-    lines.append("<!-- (作成者名)の部分を、あなたの氏名または屋号に置き換えてください -->")
+    lines.append(f"出典：厚生労働省ホームページ「{title}」（{url}）をもとにnorio111が構造化・加工")
 
     out = "\n".join(lines)
     with open("readme_example.md", "w", encoding="utf-8") as f:
