@@ -101,7 +101,14 @@ def verify_quote(quote: str, pages: list[tuple[int, str]], page_no: int | None) 
         if norm_quote in _normalize(t):
             return True, f"page {n} で一致（指定page={page_no}とズレあり）"
 
-    return False, "全ページ中に該当文字列が見つからない"
+    # 各ページ単体では見つからなくても、ページをまたいだ連続テキストとしてなら
+    # 実在する場合がある（quoteの前半と後半がPDFのページ境界で分断されているケース）。
+    # この場合、pointの根拠自体は本物である可能性が高いため、単なる「捏造」とは区別して報告する。
+    full_text_norm = _normalize("".join(t for _, t in pages))
+    if norm_quote in full_text_norm:
+        return True, "ページ境界をまたいだ連結テキストで一致（quoteが複数ページに分断されている可能性）"
+
+    return False, "全ページ・連結テキストのいずれにも該当文字列が見つからない"
 
 
 def print_verification_report(result: dict, pages: list[tuple[int, str]]) -> None:
