@@ -28,6 +28,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 import pdfplumber
 import requests
@@ -74,8 +75,15 @@ def build_prompt_text(pages: list[tuple[int, str]], max_chars: int = MAX_CHARS) 
 
 
 def _normalize(s: str) -> str:
-    """PDF抽出特有の余分な空白差異を吸収して比較するための正規化"""
-    return re.sub(r"\s+", "", s or "")
+    """
+    PDF抽出特有の差異を吸収して比較するための正規化。
+    - 空白の除去（改行・スペースの入り方の違いを吸収）
+    - NFKC正規化（全角/半角の数字・カッコ等の表記ゆれを吸収）
+      例: "３年間" と "3年間"、"(1)" と "（１）" のような差異で
+      誤って不一致（偽陰性）にならないようにする
+    """
+    s = unicodedata.normalize("NFKC", s or "")
+    return re.sub(r"\s+", "", s)
 
 
 def verify_quote(quote: str, pages: list[tuple[int, str]], page_no: int | None) -> tuple[bool, str]:
@@ -113,12 +121,16 @@ def print_verification_report(result: dict, pages: list[tuple[int, str]]) -> Non
         print(f"      {mark} 逐語検証: {detail}")
 
     if result.get("houmon_kango_related"):
-        excerpt = result.get("houmon_kango_excerpt", "")
-        verified, detail = verify_quote(excerpt, pages, None)
-        all_ok = all_ok and verified
-        mark = "✓" if verified else "✗"
-        print(f"  houmon_kango_excerpt: {excerpt}")
-        print(f"  {mark} 逐語検証: {detail}")
+        mentions = result.get("houmon_kango_mentions", [])
+        if not mentions:
+            print("  ⚠ houmon_kango_related=true なのに houmon_kango_mentions が空です")
+        for i, m in enumerate(mentions, start=1):
+            excerpt = m.get("excerpt", "")
+            verified, detail = verify_quote(excerpt, pages, m.get("page"))
+            all_ok = all_ok and verified
+            mark = "✓" if verified else "✗"
+            print(f"  houmon_kango[{i}] (page={m.get('page')}): {excerpt}")
+            print(f"  {mark} 逐語検証: {detail}")
     else:
         print("  houmon_kango_related: false（訪問看護への言及なしと判定）")
 
@@ -142,7 +154,7 @@ def process_one(conn, doc: dict, interpret_fn, model: str | None, dry_run: bool)
         result = {
             "change_points": [{"type": "その他", "point": "[DRY RUN]", "quote": "[DRY RUN]", "page": 1}],
             "houmon_kango_related": False,
-            "houmon_kango_excerpt": "",
+            "houmon_kango_mentions": [],
         }
         model_used = "dry-run"
     else:
@@ -155,7 +167,7 @@ def process_one(conn, doc: dict, interpret_fn, model: str | None, dry_run: bool)
         document_id=doc["id"],
         change_points_json=json.dumps(result.get("change_points", []), ensure_ascii=False),
         houmon_kango_related=bool(result.get("houmon_kango_related")),
-        houmon_kango_excerpt=result.get("houmon_kango_excerpt", ""),
+        houmon_kango_excerpt=json.dumps(result.get("houmon_kango_mentions", []), ensure_ascii=False),
         source_content_hash=doc["content_hash"],
         model_used=model_used,
         prompt_version=PROMPT_VERSION,

@@ -65,7 +65,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             -- 「本文に訪問看護への言及が存在したか」という機械的事実
             -- （「影響があるか」というInterpretationの評価ではない）
             houmon_kango_related INTEGER NOT NULL,
-            houmon_kango_excerpt TEXT,     -- 言及があれば原文をそのまま抜粋
+            -- houmon_kango_excerpt: JSON配列。各要素は {"excerpt": "本文からの逐語抜粋", "page": ページ番号}
+            -- change_pointsと同様、1箇所の連続した文章のみを許可し、複数箇所の結合は禁止する
+            houmon_kango_excerpt TEXT,
 
             source_content_hash TEXT NOT NULL,  -- 生成時点のrevision_document.content_hash
             model_used TEXT NOT NULL,
