@@ -1,0 +1,26 @@
+"""Claude APIバックエンド。llm.get_backend('claude') 経由で使う。"""
+
+import os
+
+from interpreter.llm import SYSTEM_PROMPT, build_user_message, parse_json_response
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
+
+
+def interpret(title: str, prompt_text: str, model: str = DEFAULT_MODEL, api_key: str | None = None) -> tuple[dict, str]:
+    import anthropic
+
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY が設定されていません")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    response = client.messages.create(
+        model=model,
+        max_tokens=1500,
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": build_user_message(title, prompt_text)}],
+    )
+    raw_text = "".join(block.text for block in response.content if block.type == "text")
+    result = parse_json_response(raw_text)
+    return result, model

@@ -1,0 +1,40 @@
+"""
+Ollamaバックエンド。llm.get_backend('ollama') 経由で使う。
+
+想定運用：
+  - RTX 4070 Super (12GB VRAM) では、7B〜14B級の量子化モデルが現実的
+    （例: qwen2.5:14b-instruct-q4, gemma2:9b 等）
+  - 本タスクは自由創作ではなく「本文からの構造化抽出」なので、
+    一般的な会話性能よりJSON追従性・指示追従性を重視してモデルを選ぶとよい
+  - Ollamaを事前に起動しておくこと: `ollama serve`（デフォルトで localhost:11434）
+"""
+
+import requests
+
+from interpreter.llm import SYSTEM_PROMPT, build_user_message, parse_json_response
+
+DEFAULT_MODEL = "qwen2.5:14b-instruct"
+DEFAULT_HOST = "http://localhost:11434"
+
+
+def interpret(
+    title: str,
+    prompt_text: str,
+    model: str = DEFAULT_MODEL,
+    host: str = DEFAULT_HOST,
+) -> tuple[dict, str]:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_message(title, prompt_text)},
+        ],
+        "format": "json",  # Ollama側でJSON出力を強制（対応モデルのみ有効）
+        "stream": False,
+    }
+    res = requests.post(f"{host}/api/chat", json=payload, timeout=300)
+    res.raise_for_status()
+    data = res.json()
+    raw_text = data["message"]["content"]
+    result = parse_json_response(raw_text)
+    return result, model

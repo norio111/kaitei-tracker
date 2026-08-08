@@ -45,6 +45,38 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_revision_document_category ON revision_document(category)"
     )
+
+    # Interpretation層：中身の解釈はここに保存する。
+    # revision_document(Fact)は変更せず、こちらだけを再生成・更新していく。
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_topic (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id INTEGER NOT NULL REFERENCES revision_document(id),
+
+            -- change_points: JSON配列。各要素は
+            --   {"type": "新設|要件変更|明確化|経過措置|廃止|その他",
+            --    "point": "本文に基づく1文要約",
+            --    "quote": "本文からの逐語抜粋（要約・言い換え禁止）",
+            --    "page": 抜粋元のページ番号(int)}
+            -- type は分類判断＝Interpretationであり、quote/pageはFactへの参照。
+            change_points TEXT NOT NULL,
+
+            -- 「本文に訪問看護への言及が存在したか」という機械的事実
+            -- （「影響があるか」というInterpretationの評価ではない）
+            houmon_kango_related INTEGER NOT NULL,
+            houmon_kango_excerpt TEXT,     -- 言及があれば原文をそのまま抜粋
+
+            source_content_hash TEXT NOT NULL,  -- 生成時点のrevision_document.content_hash
+            model_used TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,       -- 例: 'interpret-v0.1'
+            generated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_document_topic_document_id ON document_topic(document_id)"
+    )
     conn.commit()
 
 
@@ -98,3 +130,74 @@ def upsert_documents(conn: sqlite3.Connection, category: str, source_page: str, 
 
     conn.commit()
     return new_items
+
+
+def get_pending_documents(
+    conn: sqlite3.Connection, category: str | None = None, limit: int | None = None
+) -> list[dict]:
+    """
+    まだInterpretationが無い、または元資料が差し替わって
+    content_hashが変わった（＝再生成が必要な）revision_documentを返す。
+    """
+    query = """
+        SELECT rd.id, rd.category, rd.title, rd.url, rd.content_hash, rd.is_priority
+        FROM revision_document rd
+        LEFT JOIN document_topic dt
+            ON dt.document_id = rd.id AND dt.source_content_hash = rd.content_hash
+        WHERE rd.is_active = 1 AND dt.id IS NULL
+    """
+    params: list = []
+    if category:
+        query += " AND rd.category = ?"
+        params.append(category)
+    query += " ORDER BY rd.is_priority DESC, rd.published_at DESC"
+    if limit:
+        query += " LIMIT ?"
+        params.append(limit)
+
+    cur = conn.execute(query, params)
+    cols = ["id", "category", "title", "url", "content_hash", "is_priority"]
+    return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def insert_interpretation(
+    conn: sqlite3.Connection,
+    document_id: int,
+    change_points_json: str,
+    houmon_kango_related: bool,
+    houmon_kango_excerpt: str,
+    source_content_hash: str,
+    model_used: str,
+    prompt_version: str,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO document_topic
+            (document_id, change_points, houmon_kango_related, houmon_kango_excerpt,
+             source_content_hash, model_used, prompt_version, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            document_id,
+            change_points_json,
+            int(houmon_kango_related),
+            houmon_kango_excerpt,
+            source_content_hash,
+            model_used,
+            prompt_version,
+            datetime.now().isoformat(),
+        ),
+    )
+    conn.commit()
+
+
+def snapshot_revision_document(conn: sqlite3.Connection) -> tuple[int, str]:
+    """
+    revision_documentの件数と内容ハッシュを取る。
+    Interpretation生成の前後でこれを比較し、Factテーブルが
+    一切変更されていないことを機械的に確認するための保険。
+    """
+    row = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(LENGTH(title) + LENGTH(url)), 0) FROM revision_document"
+    ).fetchone()
+    return row[0], str(row[1])

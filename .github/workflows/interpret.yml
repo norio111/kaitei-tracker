@@ -1,0 +1,51 @@
+name: 資料の解釈生成（Claude API）
+
+on:
+  workflow_dispatch:
+    inputs:
+      category:
+        description: "対象カテゴリ（空欄で全カテゴリ）"
+        required: false
+        default: "gigi"
+      limit:
+        description: "1回の実行で処理する件数（最初は1推奨）"
+        required: false
+        default: "1"
+
+permissions:
+  contents: write
+
+jobs:
+  interpret:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v5
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 依存関係インストール
+        run: pip install -r requirements.txt
+
+      - name: 解釈生成の実行
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python interpreter/summarize.py \
+            --category "${{ github.event.inputs.category }}" \
+            --limit "${{ github.event.inputs.limit }}"
+
+      - name: 変化があればコミット&プッシュ
+        run: |
+          git config user.name "kaitei-bot"
+          git config user.email "kaitei-bot@users.noreply.github.com"
+          git add db/
+          if ! git diff --staged --quiet; then
+            git commit -m "interpret: $(date +'%Y-%m-%d %H:%M') 資料解釈を生成"
+            git push
+          else
+            echo "変化なし"
+          fi
