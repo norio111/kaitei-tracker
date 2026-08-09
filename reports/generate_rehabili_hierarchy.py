@@ -9,17 +9,25 @@
       type全種（明確化含む）。病棟軸→テーマ軸の階層構造で現場業務を網羅する。
 
   --audience admin：事務長向け報告
-      type ∈ {新設, 廃止, 要件変更, 経過措置} のみに絞る（明確化＝運用解釈の
-      確認は現場向けであり、事務長が見るべき「収益構造・届出の変化」ではないため）。
-      診療報酬改定の話題は「点」「加算」等の語がほぼ全項目に出現し、
-      キーワードによる収益シグナル検出（💰）は識別力を持たないと分かったため、
-      このモードでは💰は使わず、type分類そのもので絞り込む。
+      全change_pointsを対象とする（除外しない）。type・算定可否言及・収益シグナルの
+      いずれかに該当する項目には ⭐ を付け、各セクション内で優先表示する。
       経過措置には引き続き期限（⏰）を表示する。
+
+      【2026-08-08 設計変更】
+      当初は type ∈ {新設, 廃止, 要件変更, 経過措置} 以外（主に「明確化」）を
+      除外する方式だった。しかし check_admin_excluded.py による実データ検証で、
+      除外された10件中7件が「加算」等の収益シグナルを含んでいたことが判明
+      （研修要件・起算日・患者割合の確認など、既存加算の算定継続可否に
+      実質的に関わる内容だった）。
+      「明確化＝事務長に重要度が低い」という仮説はこれにより棄却され、
+      除外方式からランキング方式（全件表示・優先度でソート）へ移行した。
+      詳細は末尾のコメントアウトされた旧 is_admin_relevant() を参照。
 
 設計方針：
   - document_topic のスキーマは変更しない（Factは変えず、見せ方だけ再生成する）
   - 分類はキーワードによる機械的な仕分けであり、LLMには一切通さない
     （コストゼロ・再現性あり・後からルールを直せば再生成し放題）
+  - 事務長向けであっても、何も「捨てない」。優先度は見せ方（表示順・⭐）のみで表現する
 
 使い方：
     python reports/generate_rehabili_hierarchy.py --audience staff
@@ -35,29 +43,57 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from common.db import DB_PATH  # noqa: E402
-from reports.signals import extract_deadline, is_calculation_decision  # noqa: E402
+from reports.signals import extract_deadline, is_calculation_decision, has_revenue_signal  # noqa: E402
 
 CATEGORY_LABELS = {"summary": "説明資料", "gigi": "疑義解釈"}
 
 KEYWORD = "リハビリ"
 
-# 事務長向けで残すtype（収益構造・届出の変化に直結するもの）
+# 事務長向けで優先表示するtype（収益構造・届出の変化に直結するもの）。
+# これはもはや「除外の境界線」ではなく、あくまで優先度判定に使う一要素。
 ADMIN_RELEVANT_TYPES = {"新設", "廃止", "要件変更", "経過措置"}
 
 
-def is_admin_relevant(m: dict) -> bool:
+def is_admin_priority(m: dict) -> bool:
     """
-    事務長向けに残すべき項目かどうかを判定する。
-    typeが収益構造に直結するもの（新設・廃止・要件変更・経過措置）に加え、
-    typeが「明確化」であっても、算定可否そのものへの言及がある場合は
-    実質的に収益・事務判断に直結するため対象に含める
-    （「明確化」という体裁の中に「算定できる/できない」の答えそのものが
-      紛れているケースが実データで確認されたため）。
+    事務長にとって優先度が高いと考えられる項目かどうかを判定する。
+    ※これは除外フィルタではない。Falseの項目もレポートには必ず表示される。
+      表示順（優先表示）と ⭐ マーカーの付与のみに使う。
+
+    優先度の内訳（A/B/Cのような固定ランクはまだ導入しない。実データが増えてから検討）：
+      - type が収益構造・届出に直結するもの（新設・廃止・要件変更・経過措置）
+      - 算定可否そのものへの言及がある（is_calculation_decision）
+      - 点数・加算等の語を含む（has_revenue_signal）
     """
     if m["type"] in ADMIN_RELEVANT_TYPES:
         return True
     text = f"{m['point']} {m['quote']}"
-    return m["type"] == "明確化" and is_calculation_decision(text)
+    return is_calculation_decision(text) or has_revenue_signal(text)
+
+
+# --- 棄却された仮説（2026-08-08）---------------------------------------------
+# 旧is_admin_relevant()：typeが明確化の場合、is_calculation_decision()のみで
+# 事務長向け対象を判定し、それ以外（新設・廃止・要件変更・経過措置以外）を
+# レポートから除外していた。
+#
+# Observation（check_admin_excluded.py の目視確認）:
+#   除外された10件中7件が「加算」等の収益シグナル（has_revenue_signal）を含んでいた。
+#   内容も、研修要件の該当リスト・加算起算日の扱い・施設基準の調査タイミングなど、
+#   「新設・廃止のように構造は変わらないが、既存加算を算定し続けられるかの
+#   事務判断に直結する」ものだった。
+#
+# Conclusion:
+#   「type=明確化 は事務長にとって重要度が低い」という仮説は棄却。
+#   typeは「変更の形式」を表すものであり「重要度」ではないため、
+#   type単独（＋is_calculation_decisionの部分適用）による除外は
+#   Recallを損なうリスクが高いと判断し、除外方式を撤去した。
+#
+# def is_admin_relevant(m: dict) -> bool:
+#     if m["type"] in ADMIN_RELEVANT_TYPES:
+#         return True
+#     text = f"{m['point']} {m['quote']}"
+#     return m["type"] == "明確化" and is_calculation_decision(text)
+# -----------------------------------------------------------------------------
 
 # 軸①：病棟・算定区分（主軸。この順序でセクションを出す）
 WARD_AXIS = [
@@ -116,32 +152,37 @@ def fetch_mentions(conn: sqlite3.Connection, keyword: str) -> list[dict]:
             text = f"{cp.get('point', '')} {cp.get('quote', '')}"
             if keyword not in text:
                 continue
-            results.append(
-                {
-                    "category": category,
-                    "title": title,
-                    "url": url,
-                    "type": cp.get("type", ""),
-                    "point": cp.get("point", ""),
-                    "quote": cp.get("quote", ""),
-                    "page": cp.get("page"),
-                    "ward_tags": classify(text, WARD_AXIS),
-                    "disease_tags": classify(text, DISEASE_AXIS),
-                    "theme_tags": classify(text, THEME_AXIS),
-                    "deadline": extract_deadline(text) if cp.get("type") == "経過措置" else None,
-                }
-            )
+            item = {
+                "category": category,
+                "title": title,
+                "url": url,
+                "type": cp.get("type", ""),
+                "point": cp.get("point", ""),
+                "quote": cp.get("quote", ""),
+                "page": cp.get("page"),
+                "ward_tags": classify(text, WARD_AXIS),
+                "disease_tags": classify(text, DISEASE_AXIS),
+                "theme_tags": classify(text, THEME_AXIS),
+                "deadline": extract_deadline(text) if cp.get("type") == "経過措置" else None,
+            }
+            # 優先度は事前計算しておく（staff/adminどちらの表示でも参照できるように）。
+            # ※ staff側の表示順には使わない。admin側の表示順とマーカーにのみ使う。
+            item["admin_priority"] = is_admin_priority(item)
+            results.append(item)
     return results
 
 
-def render_item(m: dict) -> list[str]:
+def render_item(m: dict, audience: str = "staff") -> list[str]:
     lines = []
     cat_label = CATEGORY_LABELS.get(m["category"], m["category"])
     page_label = f"（page {m['page']}）" if m.get("page") else ""
     sub_tags = m["disease_tags"] + m["theme_tags"]
     tag_label = f" `{' '.join(sub_tags)}`" if sub_tags else ""
     deadline_label = f" ⏰期限:{m['deadline']}" if m.get("deadline") else ""
-    lines.append(f"- [{cat_label}][{m['type']}]{deadline_label} **{m['point']}**{tag_label} {page_label}")
+    priority_label = " ⭐" if audience == "admin" and m.get("admin_priority") else ""
+    lines.append(
+        f"- [{cat_label}][{m['type']}]{deadline_label}{priority_label} **{m['point']}**{tag_label} {page_label}"
+    )
     lines.append(f"  > {m['quote']}")
     lines.append(f"  - {m['title']}")
     lines.append(f"  - {m['url']}")
@@ -149,11 +190,11 @@ def render_item(m: dict) -> list[str]:
     return lines
 
 
-def render_section(section_title: str, items: list[dict]) -> list[str]:
+def render_section(section_title: str, items: list[dict], audience: str) -> list[str]:
     """
     セクション内をテーマ軸（軸③）ごとの小見出しに分割して表示する。
-    「病院PT管理職プロファイル」向け：現場運用に直結するテーマを優先表示する。
-    どのテーマにも一致しない項目は最後に「その他」として出す。
+    admin向けの場合、各テーマ小見出し内で admin_priority=True の項目を先に表示する
+    （除外はしない。優先度の高いものが埋もれないようにするための並び替えのみ）。
 
     表示順は「見せ方の優先度」であって、DBの並びやFactの重要度そのものではない。
     優先順位を変えたければ THEME_DISPLAY_ORDER を並び替えるだけでよい。
@@ -165,18 +206,22 @@ def render_section(section_title: str, items: list[dict]) -> list[str]:
         theme_items = [m for m in items if theme_label in m["theme_tags"] and id(m) not in shown_ids]
         if not theme_items:
             continue
+        if audience == "admin":
+            theme_items = sorted(theme_items, key=lambda m: not m["admin_priority"])
         lines.append(f"#### {theme_label}")
         lines.append("")
         for m in theme_items:
-            lines.extend(render_item(m))
+            lines.extend(render_item(m, audience))
             shown_ids.add(id(m))
 
     other_items = [m for m in items if id(m) not in shown_ids]
     if other_items:
+        if audience == "admin":
+            other_items = sorted(other_items, key=lambda m: not m["admin_priority"])
         lines.append("#### その他")
         lines.append("")
         for m in other_items:
-            lines.extend(render_item(m))
+            lines.extend(render_item(m, audience))
 
     return lines
 
@@ -188,9 +233,6 @@ THEME_DISPLAY_ORDER = ["離床・ベッド上", "計画書・記録", "多職種
 
 
 def render_markdown(mentions: list[dict], audience: str) -> str:
-    if audience == "admin":
-        mentions = [m for m in mentions if is_admin_relevant(m)]
-
     title_suffix = "事務長向け報告" if audience == "admin" else "リハ職員向け運用連絡"
     lines = []
     lines.append(f"# {KEYWORD} 関連レポート（{title_suffix}）")
@@ -199,8 +241,11 @@ def render_markdown(mentions: list[dict], audience: str) -> str:
     lines.append("")
     if audience == "admin":
         lines.append(
-            "収益構造・届出に関わる変更点（新設・廃止・要件変更・経過措置）のみを対象にしています。"
-            "運用解釈の確認（明確化）はリハ職員向けレポートを参照してください。"
+            "全変更点を対象にしています（除外はしていません）。"
+            "そのうち、type（新設・廃止・要件変更・経過措置）・算定可否への言及・"
+            "収益シグナル（点数・加算等の語）のいずれかに該当する項目には ⭐ を付け、"
+            "各テーマ内で優先的に上位表示しています。"
+            "⭐が無い項目も事務判断に関わる可能性があるため、必要に応じて目を通してください。"
         )
     else:
         lines.append(
@@ -235,14 +280,18 @@ def render_markdown(mentions: list[dict], audience: str) -> str:
     common_items = [m for m in mentions if id(m) not in ward_assigned]
     if common_items:
         lines.extend(
-            render_section("共通（特定の病棟区分に限定されない、または病棟を特定できない変更点）", common_items)
+            render_section(
+                "共通（特定の病棟区分に限定されない、または病棟を特定できない変更点）",
+                common_items,
+                audience,
+            )
         )
 
     for ward_label, _ in WARD_AXIS:
         items = [m for m in mentions if ward_label in m["ward_tags"]]
         if not items:
             continue
-        lines.extend(render_section(ward_label, items))
+        lines.extend(render_section(ward_label, items, audience))
 
     return "\n".join(lines)
 
@@ -261,11 +310,11 @@ def main():
     with open(output, "w", encoding="utf-8") as f:
         f.write(markdown)
 
-    if args.audience == "admin":
-        mentions = [m for m in mentions if is_admin_relevant(m)]
-
     print(f"レポート生成完了: {output}")
-    print(f"  対象件数: {len(mentions)}件")
+    print(f"  対象件数: {len(mentions)}件（除外なし）")
+    if args.audience == "admin":
+        priority_count = sum(1 for m in mentions if m["admin_priority"])
+        print(f"    うち ⭐ 優先表示: {priority_count}件")
     for ward_label, _ in WARD_AXIS:
         count = sum(1 for m in mentions if ward_label in m["ward_tags"])
         print(f"    {ward_label}: {count}件")
